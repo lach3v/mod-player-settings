@@ -1,8 +1,5 @@
 # SKELETON - Module template
 
-[English](README.md) | [Español](README_ES.md)
-
-
 ## How to create your own module
 
 1. Use the script `create_module.sh` located in [`modules/`](https://github.com/azerothcore/azerothcore-wotlk/tree/master/modules) to start quickly with all the files you need and your git repo configured correctly (heavily recommended).
