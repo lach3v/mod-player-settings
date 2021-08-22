@@ -3,7 +3,7 @@
 #
 
 # Add scripts in project
-AC_ADD_SCRIPT("${CMAKE_CURRENT_LIST_DIR}/src/MyPlayer.cpp")
+AC_ADD_SCRIPT("${CMAKE_CURRENT_LIST_DIR}/src/PlayerSettings.cpp")
 
 # Add scripts to script loader
 AC_ADD_SCRIPT_LOADER("PlayerSettings" "${CMAKE_CURRENT_LIST_DIR}/src/loader.h")
