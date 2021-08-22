@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <vector>
 #include "ScriptMgr.h"
 #include "ScriptMgrMacros.h"
 #include "MapManager.h"
@@ -5,6 +7,7 @@
 #include "Unit.h"
 #include "Config.h"
 #include "Chat.h"
+#include "Language.h"
 
 // DPS count as 1 offensive unit and tanks count as 0.5 offensive units.
 // Healers count as 1 defensive unit and tanks count as 0.5 defensive units.
@@ -18,7 +21,7 @@ const float Offence10M = 1 / 7.0f, Defence10M = 1 / 3.0f;
 // 25 man: 3 tank, 17 dps, 5 healer = 18.5 offensive units and 6.5 defensive units.
 const float Offence25M = 1 / 18.5f, Defence25M = 1 / 6.5f;
 
-// 40 man: 4 tank, 28 dps, 8 healer = 30.0 offensive units and 10 defensive units.
+// 40 man: 4 tank, 28 dps, 8 healer = 30.0 offensive units and 10.0 defensive units.
 const float Offence40M = 1 / 30.0f, Defence40M = 10.0f;
 
 class PlayerSettingsCreatureInfo : public DataMap::Base
@@ -27,8 +30,8 @@ class PlayerSettingsCreatureInfo : public DataMap::Base
 
         PlayerSettingsCreatureInfo() {}
         PlayerSettingsCreatureInfo(uint32 count, float dmg, float hpRate) :
-            playerCount(count), DamageMultiplier(dmg), HealthMultiplier(hpRate) {}
-        uint32 playerCount = 0;
+            nplayers(count), DamageMultiplier(dmg), HealthMultiplier(hpRate) {}
+        uint32 nplayers = 0;
         // This is used to detect creatures that update their entry.
         uint32 entry = 0;
         float DamageMultiplier = 1;
@@ -40,11 +43,13 @@ class PlayerSettingsMapInfo : public DataMap::Base
     public:
 
         PlayerSettingsMapInfo() {}
-        PlayerSettingsMapInfo(uint32 count) : playerCount(count) {}
-        uint32 playerCount = 0;
+        PlayerSettingsMapInfo(uint32 count) : nplayers(count), veto(count) {}
+        uint32 nplayers = 0;
+        uint32 veto = 0;
 };
 
 static bool enabled;
+static float healthMultiplier, damageMultiplier, experienceMultiplier;
 
 int GetValidDebugLevel()
 {
@@ -71,6 +76,9 @@ class PlayerSettingsWorldScript : public WorldScript
         void SetInitialWorldSettings()
         {
             enabled = sConfigMgr->GetBoolDefault("PlayerSettings.Enable", 1);
+            healthMultiplier = sConfigMgr->GetFloatDefault("PlayerSettings.HealthMultiplier", 0.5);
+            damageMultiplier = sConfigMgr->GetFloatDefault("PlayerSettings.DamageMultiplier", 0.0625);
+            experienceMultiplier = sConfigMgr->GetFloatDefault("PlayerSettings.ExperienceMultiplier", 0.5);
         }
 };
 
@@ -93,11 +101,10 @@ class PlayerSettingsPlayerScript : public PlayerScript
                 Map *map = player->GetMap();
 
                 if (map->IsDungeon()) {
-                    // Ensure that the players always get the same XP, even when
-                    // entering the dungeon alone.
-                    uint32 maxPlayerCount = ((InstanceMap*)sMapMgr->FindMap(map->GetId(), map->GetInstanceId()))->GetMaxPlayers();
-                    uint32 currentPlayerCount = map->GetPlayersCountExceptGMs();
-                    amount *= (float)currentPlayerCount / maxPlayerCount;
+                    uint32 maxPlayers = ((InstanceMap*)sMapMgr->FindMap(map->GetId(), map->GetInstanceId()))->GetMaxPlayers();
+                    PlayerSettingsMapInfo *mapInfo = map->CustomData.GetDefault<PlayerSettingsMapInfo>("PlayerSettingsMapInfo");
+                    uint32 nplayers = std::max(mapInfo->nplayers, mapInfo->veto);
+                    amount = amount / maxPlayers * (1 + experienceMultiplier * (nplayers - 1));
                 }
             }
         }
@@ -135,6 +142,16 @@ class PlayerSettingsUnitScript : public UnitScript
             damage = _DealDamage(target, attacker, damage);
         }
 
+        bool InDungeon(Unit *target, Unit *attacker)
+        {
+            return target->GetMap()->IsDungeon() && attacker->GetMap()->IsDungeon();
+        }
+
+        bool InBattleground(Unit *target, Unit *attacker)
+        {
+            return target->GetMap()->IsBattleground() && attacker->GetMap()->IsBattleground();
+        }
+
         uint32 _DealDamage(Unit *target, Unit *attacker, uint32 damage)
         {
             if (!enabled)
@@ -146,6 +163,12 @@ class PlayerSettingsUnitScript : public UnitScript
             float damageMultiplier = attacker->CustomData.GetDefault<PlayerSettingsCreatureInfo>("PlayerSettingsCreatureInfo")->DamageMultiplier;
 
             if (damageMultiplier == 1)
+                return damage;
+
+            if (!InDungeon(target, attacker) || !InBattleground(target, attacker))
+                return damage;
+
+            if ((attacker->IsHunterPet() || attacker->IsPet() || attacker->IsSummon()) && attacker->IsControlledByPlayer())
                 return damage;
 
             return damage * damageMultiplier;
@@ -167,16 +190,19 @@ class PlayerSettingsAllMapScript : public AllMapScript
                 return;
 
             PlayerSettingsMapInfo *mapInfo = map->CustomData.GetDefault<PlayerSettingsMapInfo>("PlayerSettingsMapInfo");
-            mapInfo->playerCount = map->GetPlayersCountExceptGMs();
+            mapInfo->nplayers = map->GetPlayersCountExceptGMs();
+
+            if (mapInfo->veto == 0)
+                mapInfo->veto = mapInfo->nplayers;
 
             if (map->GetEntry()->IsDungeon() && player) {
                 Map::PlayerList const &playerList = map->GetPlayers();
 
                 if (!playerList.isEmpty()) {
-                    for (Map::PlayerList::const_iterator iter = playerList.begin(); iter != playerList.end(); iter++) {
+                    for (Map::PlayerList::const_iterator iter = playerList.begin(); iter != playerList.end(); ++iter) {
                         if (Player *playerHandle = iter->GetSource()) {
                             ChatHandler chatHandle = ChatHandler(playerHandle->GetSession());
-                            chatHandle.PSendSysMessage("|cffFF0000 [PlayerSettings]|r %s has entered the instance. The minions of Hell grow stronger.", player->GetName().c_str());
+                            chatHandle.PSendSysMessage("|cffFF0000 [PlayerSettings]|r %s has entered the instance. The creatures of Azeroth grow stronger.", player->GetName().c_str());
                         }
                     }
                 }
@@ -197,7 +223,7 @@ class PlayerSettingsAllMapScript : public AllMapScript
                 bool PlayerSettingsCheck = false;
                 Map::PlayerList const &playerList = map->GetPlayers();
 
-                for (Map::PlayerList::const_iterator iter = playerList.begin(); iter != playerList.end(); iter++) {
+                for (Map::PlayerList::const_iterator iter = playerList.begin(); iter != playerList.end(); ++iter) {
                     if (Player *player = iter->GetSource())
                     {
                         if (player->IsInCombat())
@@ -205,27 +231,18 @@ class PlayerSettingsAllMapScript : public AllMapScript
                     }
                 }
 
-                if (PlayerSettingsCheck) {
-                    for (Map::PlayerList::const_iterator iter = playerList.begin(); iter != playerList.end(); iter++)
-                    {
-                        if (Player *player = iter->GetSource())
-                        {
-                            player->GetSession()->SendNotification("|cffFF0000 [PlayerSettings]|r %s has left during a battle. Instance elastic lock.", player->GetName().c_str());
-                        }
-                    }
-                } else {
-
-                }
+                if (!PlayerSettingsCheck)
+                    mapInfo->nplayers = map->GetPlayersCountExceptGMs() - 1;
             }
 
             if (map->GetEntry()->IsDungeon() && player) {
                 Map::PlayerList const &playerList = map->GetPlayers();
 
                 if (!playerList.isEmpty()) {
-                    for (Map::PlayerList::const_iterator iter = playerList.begin(); iter != playerList.end(); iter++) {
+                    for (Map::PlayerList::const_iterator iter = playerList.begin(); iter != playerList.end(); ++iter) {
                         if (Player *playerHandle = iter->GetSource()) {
                             ChatHandler chatHandle = ChatHandler(playerHandle->GetSession());
-                            chatHandle.PSendSysMessage("|cffFF0000 [PlayerSettings]|r %s has left the instance. The minions of Hell grow weaker.", player->GetName().c_str());
+                            chatHandle.PSendSysMessage("|cffFF0000 [PlayerSettings]|r %s has left the instance. The creatures of Azeroth grow weaker.", player->GetName().c_str());
                         }
                     }
                 }
@@ -261,15 +278,14 @@ class PlayerSettingsAllCreatureScript : public AllCreatureScript
             PlayerSettingsMapInfo *mapInfo = creature->GetMap()->CustomData.GetDefault<PlayerSettingsMapInfo>("PlayerSettingsMapInfo");
             CreatureTemplate const *creatureTemplate = creature->GetCreatureTemplate();
             InstanceMap *instanceMap = ((InstanceMap*)sMapMgr->FindMap(creature->GetMapId(), creature->GetInstanceId()));
-            uint32 maxPlayers = instanceMap->GetMaxPlayers();
             PlayerSettingsCreatureInfo *creatureInfo = creature->CustomData.GetDefault<PlayerSettingsCreatureInfo>("PlayerSettingsCreatureInfo");
 
             if (!creature->IsAlive())
                 return;
 
-            creatureInfo->playerCount = mapInfo->playerCount;
+            creatureInfo->nplayers = std::max(mapInfo->nplayers, mapInfo->veto);
 
-            if (!creatureInfo->playerCount)
+            if (!creatureInfo->nplayers)
                 return;
 
             creatureInfo->entry = creature->GetEntry();
@@ -280,35 +296,33 @@ class PlayerSettingsAllCreatureScript : public AllCreatureScript
 
             float offence = 1.0f;
             float defence = 1.0f;
-            if (creatureInfo->playerCount < maxPlayers) {
-                if (instanceMap->IsRaid()) {
-                    switch (instanceMap->GetMaxPlayers()) {
-                        case 10:
-                            offence = Offence10M;
-                            defence = Defence10M;
-                            break;
-                        case 25:
-                            offence = Offence25M;
-                            defence = Defence25M;
-                            break;
-                        default:
-                            offence = Offence40M;
-                            defence = Defence40M;
-                            break;
-                    }
-                } else {
-                    offence = Offence5M;
-                    defence = Defence5M;
+            if (instanceMap->IsRaid()) {
+                switch (instanceMap->GetMaxPlayers()) {
+                    case 10:
+                        offence = Offence10M;
+                        defence = Defence10M;
+                        break;
+                    case 25:
+                        offence = Offence25M;
+                        defence = Defence25M;
+                        break;
+                    default:
+                        offence = Offence40M;
+                        defence = Defence40M;
+                        break;
                 }
+            } else {
+                offence = Offence5M;
+                defence = Defence5M;
             }
 
-            creatureInfo->HealthMultiplier = offence * (1 + 0.5f * (creatureInfo->playerCount - 1));
-            creatureInfo->DamageMultiplier = defence * (1 + 0.0625f * (creatureInfo->playerCount - 1));
+            creatureInfo->HealthMultiplier = offence * (1 + healthMultiplier * (creatureInfo->nplayers - 1));
+            creatureInfo->DamageMultiplier = defence * (1 + damageMultiplier * (creatureInfo->nplayers - 1));
 
             scaledHealth = round(((float)baseHealth * creatureInfo->HealthMultiplier) + 1.0f);
 
-            uint32 previousMaxHealth = creature->GetMaxHealth();
             uint32 previousHealth = creature->GetHealth();
+            uint32 previousMaxHealth = creature->GetMaxHealth();
 
             creature->SetCreateHealth(scaledHealth);
             creature->SetMaxHealth(scaledHealth);
@@ -322,6 +336,73 @@ class PlayerSettingsAllCreatureScript : public AllCreatureScript
         }
 };
 
+class PlayerSettingsCommandScript : public CommandScript
+{
+    public:
+        PlayerSettingsCommandScript() : CommandScript("PlayerSettingsCommandScript") {}
+
+        std::vector<ChatCommand> GetCommands() const
+        {
+            static std::vector<ChatCommand> playerSettings = {{"instance",
+            SEC_GAMEMASTER, true, &HandleInstanceStatsCommand, ""}, {"npc",
+            SEC_GAMEMASTER, true, &HandleCreatureStatsCommand, ""}};
+
+            static std::vector<ChatCommand> commands = {{"players", SEC_PLAYER,
+            true, &HandlePlayersCommand, ""}, {"playersettings", SEC_GAMEMASTER,
+            false, NULL, "Player " "", playerSettings}};
+
+            return commands;
+        }
+
+        static bool HandlePlayersCommand(ChatHandler *handler, const char *args)
+        {
+            char *x = strtok((char*) args, " ");
+            Player *player = handler->getSelectedPlayerOrSelf();
+            Map *map = player->GetMap();
+            PlayerSettingsMapInfo* mapInfo = map->CustomData.GetDefault<PlayerSettingsMapInfo>("PlayerSettingsMapInfo");
+
+            if (x) {
+                uint32 i = (uint32)atoi(x);
+                uint32 maxPlayers = ((InstanceMap*)sMapMgr->FindMap(map->GetId(), map->GetInstanceId()))->GetMaxPlayers();
+                mapInfo->veto = i < maxPlayers ? i : maxPlayers;
+            }
+
+            handler->PSendSysMessage("Players set to %i.", mapInfo->veto);
+
+            return true;
+        }
+
+        static bool HandleInstanceStatsCommand(ChatHandler *handler, const char */*args*/)
+        {
+            Player *player = handler->getSelectedPlayerOrSelf();
+            PlayerSettingsMapInfo *mapInfo = player->GetMap()->CustomData.GetDefault<PlayerSettingsMapInfo>("PlayerSettingsMapInfo");
+            uint32 nplayers = std::max(mapInfo->nplayers, mapInfo->veto);
+
+            handler->PSendSysMessage("Player count: %u", mapInfo->nplayers);
+            handler->PSendSysMessage("Experience multiplier: %.6f", (1 + experienceMultiplier * (nplayers - 1)));
+
+            return true;
+        }
+
+        static bool HandleCreatureStatsCommand(ChatHandler* handler, const char* /*args*/)
+        {
+            Creature* target = handler->getSelectedCreature();
+
+            if (!target) {
+                handler->SendSysMessage(LANG_SELECT_CREATURE);
+                handler->SetSentErrorMessage(true);
+                return false;
+            }
+
+            PlayerSettingsCreatureInfo *creatureInfo = target->CustomData.GetDefault<PlayerSettingsCreatureInfo>("PlayerSettingsCreatureInfo");
+
+            handler->PSendSysMessage("Damage multiplier: %.6f", creatureInfo->DamageMultiplier);
+            handler->PSendSysMessage("Health multiplier: %.6f", creatureInfo->HealthMultiplier);
+
+            return true;
+        }
+};
+
 void AddPlayerSettingsScripts()
 {
     new PlayerSettingsWorldScript();
@@ -329,4 +410,5 @@ void AddPlayerSettingsScripts()
     new PlayerSettingsUnitScript();
     new PlayerSettingsAllMapScript();
     new PlayerSettingsAllCreatureScript();
+    new PlayerSettingsCommandScript();
 }
