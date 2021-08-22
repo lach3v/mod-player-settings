@@ -1,0 +1,13 @@
+[worldserver]
+
+########################################
+# Player Settings configuration
+########################################
+#
+#    PlayerSettings.Enable
+#        Description: Enable scaling of mobs' health and damage to number of players
+#        Default:     0 - Disabled
+#                     1 - Enabled
+#
+
+PlayerSettings.Enable = 1
