@@ -11,7 +11,7 @@
 
 To find the multiplier for health and damage of the mobs find the reciprocal of the offensive and defensive units respectively.
 
-The module is not Blizzlike in that 5 players in a dungeon isn't a 1.0 multiplier to health and damage (it's actually less). The core philosophy of the module is around the idea that the more the better with solo being a hardcore experience.
+The module is Blizzlike in that 5 players in a dungeon is a 1.0 multiplier to health and damage. Think of the solo scaling as a base with additional players trending the damage and health multipliers towards 1.0.
 
 *Note: This module hasn't been extensively tested for 10, 25, or 40 mans.*
 
